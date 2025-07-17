@@ -1,158 +1,119 @@
-import requests, base64, random, argparse, os, playsound, time, re, textwrap
-from constants import voices
+import requests, base64, random, argparse, os, playsound, re, textwrap
+from constants import voices  # Make sure this exists or handle fallback
 
-API_BASE_URL = f"https://api16-normal-v6.tiktokv.com/media/api/text/speech/invoke/"
-USER_AGENT = f"com.zhiliaoapp.musically/2022600030 (Linux; U; Android 7.1.2; es_ES; SM-G988N; Build/NRD90M;tt-ok/3.12.13.1)"
+# --- MAIN TTS FUNCTION (uses reverse proxy) ---
+def tts(text: str, voice: str = "en_us_001", filename: str = "voice.mp3", play: bool = False):
+    if not text.strip():
+        print("Error: Text is empty.")
+        return
 
-
-def tts(session_id: str, text_speaker: str = "en_us_002", req_text: str = "TikTok Text To Speech",
-        filename: str = 'voice.mp3', play: bool = False):
-    req_text = req_text.replace("+", "plus")
-    req_text = req_text.replace(" ", "+")
-    req_text = req_text.replace("&", "and")
-    req_text = req_text.replace("ä", "ae")
-    req_text = req_text.replace("ö", "oe")
-    req_text = req_text.replace("ü", "ue")
-    req_text = req_text.replace("ß", "ss")
-
-    r = requests.post(
-        f"{API_BASE_URL}?text_speaker={text_speaker}&req_text={req_text}&speaker_map_type=0&aid=1233",
-        headers={
-            'User-Agent': USER_AGENT,
-            'Cookie': f'sessionid={session_id}'
-        }
-    )
-
-    if r.json()["message"] == "Couldn't load speech. Try again.":
-        output_data = {"status": "Session ID is invalid", "status_code": 5}
-        print(output_data)
-        return output_data
-
-    vstr = [r.json()["data"]["v_str"]][0]
-    msg = [r.json()["message"]][0]
-    scode = [r.json()["status_code"]][0]
-    log = [r.json()["extra"]["log_id"]][0]
-
-    dur = [r.json()["data"]["duration"]][0]
-    spkr = [r.json()["data"]["speaker"]][0]
-
-    b64d = base64.b64decode(vstr)
-
-    with open(filename, "wb") as out:
-        out.write(b64d)
-
-    output_data = {
-        "status": msg.capitalize(),
-        "status_code": scode,
-        "duration": dur,
-        "speaker": spkr,
-        "log": log
+    api_url = "https://tiktok-tts.weilnet.workers.dev/api/generation"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": text,
+        "voice": voice
     }
 
-    print(output_data)
+    try:
+        r = requests.post(api_url, headers=headers, json=payload)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        print(f"Request failed: {e}")
+        return
 
-    if play is True:
+    try:
+        b64_audio = r.json()["data"]
+        audio_data = base64.b64decode(b64_audio)
+    except (KeyError, ValueError) as e:
+        print("Failed to decode audio from response:", e)
+        return
+
+    with open(filename, "wb") as f:
+        f.write(audio_data)
+
+    print(f"✅ Audio saved to {filename}")
+
+    if play:
         playsound.playsound(filename)
-        os.remove(filename)
-
-    return output_data
 
 
+# --- BATCH MERGE FUNCTION ---
 def batch_create(filename: str = 'voice.mp3'):
-    out = open(filename, 'wb')
+    with open(filename, 'wb') as out:
+        def sorted_alphanumeric(data):
+            convert = lambda text: int(text) if text.isdigit() else text.lower()
+            alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+            return sorted(data, key=alphanum_key)
 
-    def sorted_alphanumeric(data):
-        convert = lambda text: int(text) if text.isdigit() else text.lower()
-        alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
-        return sorted(data, key=alphanum_key)
-
-    for item in sorted_alphanumeric(os.listdir('./batch/')):
-        filestuff = open('./batch/' + item, 'rb').read()
-        out.write(filestuff)
-
-    out.close()
+        for item in sorted_alphanumeric(os.listdir('./batch/')):
+            with open('./batch/' + item, 'rb') as f:
+                out.write(f.read())
 
 
+# --- MAIN SCRIPT ENTRYPOINT ---
 def main():
-    parser = argparse.ArgumentParser(description="Simple Python script to interact with the TikTok TTS API")
+    parser = argparse.ArgumentParser(description="TikTok TTS via reverse proxy")
     parser.add_argument("-v", "--voice", help="the code of the desired voice")
     parser.add_argument("-t", "--text", help="the text to be read")
-    parser.add_argument("-s", "--session", help="account session id")
     parser.add_argument("-f", "--file", help="use this if you wanna use 'text.txt'")
     parser.add_argument("-n", "--name", help="The name for the output file (.mp3)")
     parser.add_argument("-p", "--play", action='store_true', help="use this if you want to play your output")
     args = parser.parse_args()
 
-    text_speaker = args.voice
-
-    if args.file is not None:
-        req_text = open(args.file, 'r', errors='ignore', encoding='utf-8').read()
+    # Text source
+    if args.file:
+        req_text = open(args.file, 'r', encoding='utf-8', errors='ignore').read()
+    elif args.text:
+        req_text = args.text
     else:
-        if args.text == None:
-            req_text = 'TikTok Text To Speech'
-            print('You need to have one form of text! (See README.md)')
-        else:
-            req_text = args.text
+        print('⚠️ You must specify --text or --file')
+        return
 
-    if args.play is not None:
-        play = args.play
-
-    if args.voice == None:
-        text_speaker = 'en_us_002'
-        print('You need to have a voice! (See README.md)')
-
+    # Voice
+    text_speaker = args.voice or 'en_us_002'
     if text_speaker == "random":
         text_speaker = randomvoice()
 
-    if args.name is not None:
-        filename = args.name
-    else:
-        filename = 'voice.mp3'
+    # Output filename
+    filename = args.name or 'voice.mp3'
 
-    if args.session is None:
-        print('FATAL: You need to have a TikTok session ID!')
-        exit(1)
-
-    if args.file is not None:
+    # Handle long text (batch)
+    if args.file:
         chunk_size = 200
         textlist = textwrap.wrap(req_text, width=chunk_size, break_long_words=True, break_on_hyphens=False)
 
         batch_dir = './batch/'
-
-        if not os.path.exists(batch_dir):
-            os.makedirs(batch_dir)
+        os.makedirs(batch_dir, exist_ok=True)
 
         for i, item in enumerate(textlist):
-            tts(args.session, text_speaker, item, f'{batch_dir}{i}.mp3', False)
+            tts(item, text_speaker, f'{batch_dir}{i}.mp3', False)
 
         batch_create(filename)
 
         for item in os.listdir(batch_dir):
             os.remove(batch_dir + item)
-
-        if os.path.exists:
-            os.removedirs(batch_dir)
+        os.rmdir(batch_dir)
 
         return
 
-    tts(args.session, text_speaker, req_text, filename, play)
+    # Single TTS
+    tts(req_text, text_speaker, filename, args.play)
 
 
+# --- RANDOM VOICE PICKER ---
 def randomvoice():
-    count = random.randint(0, len(voices))
-    text_speaker = voices[count]
-
-    return text_speaker
+    return random.choice(voices)
 
 
+# --- SAMPLE ALL VOICES ---
 def sampler():
-    for item in voices:
-        text_speaker = item
-        filename = item
-        print(item)
-        req_text = 'TikTok Text To Speech Sample'
-        tts(text_speaker, req_text, filename)
+    for voice in voices:
+        print(voice)
+        tts("TikTok Text To Speech Sample", voice, f"{voice}.mp3", False)
 
 
+# --- ENTRY POINT ---
 if __name__ == "__main__":
     main()
